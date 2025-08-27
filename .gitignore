@@ -1,0 +1,6 @@
+# Dependencies
+node_modules
+
+# Wrangler
+.wrangler/
+.dev.vars
