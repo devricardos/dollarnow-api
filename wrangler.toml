@@ -1,0 +1,6 @@
+# O nome do seu Worker. Pegue este nome exato do seu painel da Cloudflare.
+name = "dollarnow"
+# O arquivo principal do seu Worker.
+main = "src/index.ts"
+# A data de compatibilidade. Use uma data recente.
+compatibility_date = "2024-07-30"
