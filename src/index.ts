@@ -42,10 +42,10 @@ export default {
 
         try {
             const fiatPairs = FIAT_SYMBOLS.map((s) => `USD-${s}`);
-            const assetPairs = ASSET_SYMBOLS.map((s) => `-USD`);
+            const assetPairs = ASSET_SYMBOLS.map((s) => `${s}-USD`);
             const allPairs = [...fiatPairs, ...assetPairs].join(',');
 
-            const apiResponse = await fetch(`https://economia.awesomeapi.com.br/json/last/?token=${env.AWESOME_API_TOKEN}`);
+            const apiResponse = await fetch(`https://economia.awesomeapi.com.br/json/last/${allPairs}?token=${env.AWESOME_API_TOKEN}`);
             if (!apiResponse.ok) {
                 throw new Error(`AwesomeAPI request failed with status ${apiResponse.status}`);
             }
