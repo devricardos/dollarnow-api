@@ -1,145 +1,102 @@
 /**
- * DollarNow Resilient API Fetcher v3.0
+ * DollarNow Resilient API Fetcher v3.1
  *
- * This Worker fetches currency exchange rates from multiple APIs with a fallback strategy
- * to ensure high availability. It processes and standardizes the data, providing a
- * consistent and reliable format for all client applications.
- *
- * It requires environment variables (secrets) to be set in the Cloudflare dashboard.
+ * This Worker fetches currency exchange rates and standardizes them against a USD base.
+ * All returned rates represent how many units of that currency/asset can be bought with 1 USD.
  */
 
 // --- Configuration ---
-
 const FIAT_SYMBOLS = ['BRL', 'EUR', 'JPY', 'GBP', 'AUD', 'CAD', 'CHF', 'CNY', 'HKD', 'NZD', 'SEK', 'INR', 'PKR', 'IDR', 'MXN'];
-const ASSET_SYMBOLS = ['BTC', 'XAU', 'XAG', 'XBR']; // XAU: Gold, XAG: Silver, XBR: Brent Oil
+const ASSET_SYMBOLS = ['BTC', 'XAU', 'XAG', 'XBR'];
 
-// --- Type Definitions for Safety ---
-
+// --- Type Definitions ---
 export interface Env {
-	AWESOME_API_TOKEN: string;
-	WISE_API_KEY: string;
-	UNIRATE_API_KEY: string;
-	EXCHANGERATE_API_KEY: string;
+    AWESOME_API_TOKEN: string;
+    // Add other API keys here if you expand the fetchers
 }
 
 interface AwesomeApiItem {
-	code: string;
-	codein: string;
-	name: string;
-	bid: string;
-	timestamp: string;
+    code: string;
+    codein: string;
+    name: string;
+    bid: string;
+    timestamp: string;
 }
 
 interface AwesomeApiResponse {
-	[key: string]: AwesomeApiItem;
+    [key: string]: AwesomeApiItem;
 }
 
-// --- API Fetcher Definitions ---
-
-const apiFetchers = [
-	// 1. Awesome API (Primary)
-	async (env: Env) => {
-		if (!env.AWESOME_API_TOKEN) throw new Error('AWESOME_API_TOKEN is not configured.');
-
-		const fiatPairs = FIAT_SYMBOLS.map((s) => `USD-${s}`);
-		const assetPairs = ASSET_SYMBOLS.map((s) => `${s}-USD`);
-		const allPairs = [...fiatPairs, ...assetPairs].join(',');
-
-		const response = await fetch(`https://economia.awesomeapi.com.br/json/last/${allPairs}?token=${env.AWESOME_API_TOKEN}`);
-		if (!response.ok) throw new Error('Awesome API request failed');
-		const data: AwesomeApiResponse = await response.json();
-
-		const rates: { [key: string]: number } = {};
-		for (const item of Object.values(data)) {
-			const value = parseFloat(item.bid);
-			if (isNaN(value)) continue;
-
-			// Standardize the key: if base is USD, use the target currency. Otherwise, use the base asset.
-			const key = item.code === 'USD' ? item.codein : item.code;
-			rates[key] = value;
-		}
-		if (Object.keys(rates).length === 0) throw new Error('Awesome API returned no valid rates.');
-		console.log('OK: Fetched from Awesome API');
-		return rates;
-	},
-
-	// 2. Wise API (Fiat Only)
-	async (env: Env) => {
-		if (!env.WISE_API_KEY) throw new Error('WISE_API_KEY is not configured.');
-		const response = await fetch('https://api.wise.com/v1/rates?source=USD', {
-			headers: { Authorization: `Bearer ${env.WISE_API_KEY}` }
-		});
-		if (!response.ok) throw new Error('Wise API request failed');
-		const data = await response.json();
-
-		const rates: { [key: string]: number } = {};
-		const neededSymbols = new Set(FIAT_SYMBOLS);
-		for (const rateInfo of data) {
-			if (neededSymbols.has(rateInfo.target)) {
-				rates[rateInfo.target] = rateInfo.rate;
-			}
-		}
-		if (Object.keys(rates).length === 0) throw new Error('Wise API returned no valid rates for needed symbols.');
-		console.log('OK: Fetched from Wise API');
-		return rates;
-	}
-	// Other fetchers like UniRate and ExchangeRate-API can be added here following the same pattern.
-];
-
 // --- Main Worker Logic ---
-
 export default {
-	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-		const cacheKey = new Request(request.url, request);
-		const cache = caches.default;
+    async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+        const cacheKey = new Request(request.url, request);
+        const cache = caches.default;
 
-		let response = await cache.match(cacheKey);
-		if (response) {
-			console.log('Cache hit!');
-			return new Response(response.body, response);
-		}
-		console.log('Cache miss. Fetching from APIs...');
+        let response = await cache.match(cacheKey);
+        if (response) {
+            console.log('Cache hit!');
+            return new Response(response.body, response);
+        }
+        console.log('Cache miss. Fetching from AwesomeAPI...');
 
-		let combinedRates: { [key: string]: number } = {};
+        try {
+            const fiatPairs = FIAT_SYMBOLS.map((s) => `USD-${s}`);
+            const assetPairs = ASSET_SYMBOLS.map((s) => `-USD`);
+            const allPairs = [...fiatPairs, ...assetPairs].join(',');
 
-		for (const fetcher of apiFetchers) {
-			try {
-				const rates = await fetcher(env);
-				if (rates && Object.keys(rates).length > 0) {
-					combinedRates = rates;
-					break; // Success, exit the loop
-				}
-			} catch (error) {
-				console.warn(`Fetcher failed: ${error instanceof Error ? error.message : String(error)}`);
-			}
-		}
+            const apiResponse = await fetch(`https://economia.awesomeapi.com.br/json/last/?token=${env.AWESOME_API_TOKEN}`);
+            if (!apiResponse.ok) {
+                throw new Error(`AwesomeAPI request failed with status ${apiResponse.status}`);
+            }
 
-		if (Object.keys(combinedRates).length === 0) {
-			return new Response(JSON.stringify({ success: false, error: 'All primary API sources are unavailable.' }), {
-				status: 503,
-				headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-			});
-		}
+            const data: AwesomeApiResponse = await apiResponse.json();
+            const processedRates: { [key: string]: number } = { USD: 1 };
+            let lastTimestamp = 0;
 
-		// Always add the base USD rate
-		combinedRates['USD'] = 1;
+            for (const item of Object.values(data)) {
+                const value = parseFloat(item.bid);
+                if (isNaN(value)) continue;
 
-		const responsePayload = {
-			success: true,
-			rates: combinedRates,
-			updated_at: Math.floor(Date.now() / 1000) // Correct Unix timestamp in seconds
-		};
+                // This is the core logic for standardization
+                if (item.code === 'USD') {
+                    // It's a fiat currency (USD-BRL), the value is correct.
+                    processedRates[item.codein] = value;
+                } else {
+                    // It's an asset (BTC-USD), we need to invert the value.
+                    // 1 / (USD per Asset) = Assets per USD
+                    processedRates[item.code] = 1 / value;
+                }
 
-		response = new Response(JSON.stringify(responsePayload), {
-			headers: {
-				'Content-Type': 'application/json',
-				'Access-Control-Allow-Origin': '*',
-				'Cache-Control': 'public, max-age=90' // Updated 90-second cache TTL
-			}
-		});
+                const currentTimestamp = parseInt(item.timestamp, 10);
+                if (currentTimestamp > lastTimestamp) {
+                    lastTimestamp = currentTimestamp;
+                }
+            }
 
-		ctx.waitUntil(cache.put(cacheKey, response.clone()));
-		return response;
-	}
+            const responsePayload = {
+                success: true,
+                rates: processedRates,
+                updated_at: lastTimestamp || Math.floor(Date.now() / 1000)
+            };
+
+            response = new Response(JSON.stringify(responsePayload), {
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*',
+                    'Cache-Control': 'public, max-age=90'
+                }
+            });
+
+            ctx.waitUntil(cache.put(cacheKey, response.clone()));
+            return response;
+
+        } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            return new Response(JSON.stringify({ success: false, error: errorMessage }), {
+                status: 503,
+                headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+            });
+        }
+    }
 };
-
